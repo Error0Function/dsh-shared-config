@@ -1,0 +1,5 @@
+- id: config-editor
+  disabled: true
+- insert:
+    - id: shared-config-editor
+      name: dsh-shared-config

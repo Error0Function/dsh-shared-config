@@ -1,0 +1,9 @@
+{
+  "meta": {
+    "title": "共享配置",
+    "description": "将原生插件配置保存到共同的 DSH home 目录。"
+  },
+  "config": {
+    "lockWaitMs": "等待其他配置写入者释放锁的最长时间，单位为毫秒。"
+  }
+}
