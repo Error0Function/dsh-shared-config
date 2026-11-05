@@ -18,7 +18,7 @@
   },
   "engines": {
     "node": ">=24.9.0",
-    "dsh": "0.2.2-alpha.2"
+    "dsh": ">=0.2.2-alpha.2 <0.3.0-0"
   },
   "packageManager": "pnpm@12.17.0",
   "keywords": ["dsh", "cordis", "configuration", "shared-config"],
@@ -35,16 +35,16 @@
     "check": "pnpm run typecheck && pnpm test && pnpm run build && pnpm run test:package",
     "prepack": "pnpm run build"
   },
-  "files": ["lib/", "locale/", "icon.svg", "cordis.patch.yml", "README.md", "docs/RELEASING.md", "LICENSE"],
+  "files": ["lib/", "locale/", "icon.svg", "cordis.patch.yml", "README.md", "README.zh.md", "docs/RELEASING.md", "LICENSE"],
   "peerDependencies": {
-    "@deepseek-ai/cordis": "4.0.6-alpha.1",
-    "@deepseek-ai/schemastery": "3.18.6-alpha.1",
-    "@deepseek-ai/cordis-plugin-include": "1.0.11-alpha.1",
-    "@deepseek-ai/cordis-plugin-loader": "1.0.7-alpha.1",
-    "@deepseek-ai/dsh-config-editor": "0.2.2-alpha.2",
-    "@deepseek-ai/dsh-app-boot": "0.2.2-alpha.2",
-    "@deepseek-ai/dsh-atomic-write": "0.2.2-alpha.2",
-    "@deepseek-ai/dsh-hmr": "0.2.2-alpha.2"
+    "@deepseek-ai/cordis": ">=4.0.6-alpha.1 <5.0.0-0",
+    "@deepseek-ai/schemastery": ">=3.18.6-alpha.1 <4.0.0-0",
+    "@deepseek-ai/cordis-plugin-include": ">=1.0.11-alpha.1 <2.0.0-0",
+    "@deepseek-ai/cordis-plugin-loader": ">=1.0.7-alpha.1 <2.0.0-0",
+    "@deepseek-ai/dsh-config-editor": ">=0.2.2-alpha.2 <0.3.0-0",
+    "@deepseek-ai/dsh-app-boot": ">=0.2.2-alpha.2 <0.3.0-0",
+    "@deepseek-ai/dsh-atomic-write": ">=0.2.2-alpha.2 <0.3.0-0",
+    "@deepseek-ai/dsh-hmr": ">=0.2.2-alpha.2 <0.3.0-0"
   },
   "dependencies": {
     "js-yaml": "^4.3.2",

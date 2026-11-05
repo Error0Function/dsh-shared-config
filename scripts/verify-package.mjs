@@ -8,16 +8,19 @@ import { join, resolve } from 'node:path'
 const archive = resolve(process.argv[2] ?? 'dist/dsh-shared-config.tgz')
 const manifest = JSON.parse(await readFile(new URL('../package.json', import.meta.url), 'utf8'))
 const listing = execFileSync('tar', ['-tzf', archive], { encoding: 'utf8' }).trim().split(/\r?\n/)
-const allowed = /^package\/(?:package\.json|README\.md|docs\/RELEASING\.md|LICENSE|cordis\.patch\.yml|icon\.svg|locale\/(?:en-US|zh-CN)\.json|lib\/(?:index\.js|index\.d\.ts|document\.d\.ts))$/
+const allowed = /^package\/(?:package\.json|README(?:\.zh)?\.md|docs\/RELEASING\.md|LICENSE|cordis\.patch\.yml|icon\.svg|locale\/(?:en-US|zh-CN)\.json|lib\/(?:index\.js|index\.d\.ts|document\.d\.ts))$/
 for (const name of listing) assert.match(name, allowed, `Unexpected packed file: ${name}`)
-for (const name of ['lib/index.js', 'lib/index.d.ts', 'cordis.patch.yml', 'docs/RELEASING.md', 'LICENSE', 'icon.svg', 'locale/en-US.json', 'locale/zh-CN.json']) {
+for (const name of ['README.md', 'README.zh.md', 'lib/index.js', 'lib/index.d.ts', 'cordis.patch.yml', 'docs/RELEASING.md', 'LICENSE', 'icon.svg', 'locale/en-US.json', 'locale/zh-CN.json']) {
   assert.ok(listing.includes(`package/${name}`), `Missing packed file: ${name}`)
 }
 const consumer = await mkdtemp(join(tmpdir(), 'dsh-shared-config-package-'))
 try {
   await writeFile(join(consumer, 'package.json'), JSON.stringify({
     name: 'shared-config-consumer', private: true, type: 'module',
-    dependencies: { ...manifest.peerDependencies, [manifest.name]: archive },
+    dependencies: {
+      ...Object.fromEntries(Object.keys(manifest.peerDependencies).map(name => [name, manifest.devDependencies[name]])),
+      [manifest.name]: archive,
+    },
   }, null, 2) + '\n')
   await writeFile(join(consumer, 'pnpm-workspace.yaml'), 'packages:\n  - .\nautoInstallPeers: true\n')
   const pnpm = process.env.npm_execpath
