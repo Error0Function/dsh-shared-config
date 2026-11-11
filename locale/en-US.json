@@ -1,0 +1,9 @@
+{
+  "meta": {
+    "title": "Shared configuration",
+    "description": "Save native plugin configuration in the same DSH home directory used by multiple profiles."
+  },
+  "config": {
+    "lockWaitMs": "Maximum time in milliseconds to wait for another configuration writer."
+  }
+}

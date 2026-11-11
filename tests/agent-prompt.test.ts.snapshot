@@ -1,0 +1,27 @@
+exports[`assembles configured guidance through the Loader 1`] = `
+{
+  "guidance": "You are an AI agent powered by DeepSeek Harness.\\n\\nUse dsh-shared-config's editor workflow to save a plugin setting to $DSH_HOME/cordis.patch.yml when it should be shared by multiple DSH profiles using the same $DSH_HOME and the editor supports it. Keep plugin installation, enablement, and profile-specific settings in the requested profile's local configuration. If the editor cannot handle the setting or is unavailable, use the appropriate local configuration and continue without waiting for shared storage. Finish the plugin task; when configuration changed, briefly say what was shared and what stayed local.",
+  "selection": {
+    "default": {
+      "cordis": true,
+      "ptc-creator": false,
+      "standard": false
+    },
+    "custom": {
+      "cordis": false,
+      "ptc-creator": true,
+      "standard": false
+    },
+    "multiple": {
+      "cordis": true,
+      "ptc-creator": true,
+      "standard": false
+    },
+    "disabled": {
+      "cordis": false,
+      "ptc-creator": false,
+      "standard": false
+    }
+  }
+}
+`;

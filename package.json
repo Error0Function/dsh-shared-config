@@ -1,0 +1,96 @@
+{
+  "name": "dsh-shared-config",
+  "version": "0.1.0",
+  "description": "Shared native configuration for DSH profiles using the same home directory.",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Error0Function/dsh-shared-config.git"
+  },
+  "homepage": "https://github.com/Error0Function/dsh-shared-config#readme",
+  "bugs": {
+    "url": "https://github.com/Error0Function/dsh-shared-config/issues"
+  },
+  "publishConfig": {
+    "registry": "https://registry.npmjs.org/",
+    "access": "public"
+  },
+  "type": "module",
+  "main": "./lib/index.js",
+  "types": "./lib/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./lib/index.d.ts",
+      "default": "./lib/index.js"
+    },
+    "./package.json": "./package.json",
+    "./agent-prompt": {
+      "types": "./lib/agent-prompt.d.ts",
+      "default": "./lib/agent-prompt.js"
+    },
+    "./cordis.patch.yml": "./cordis.patch.yml",
+    "./locale/*.json": "./locale/*.json",
+    "./icon": "./icon.svg"
+  },
+  "engines": {
+    "node": ">=24.9.0",
+    "dsh": ">=0.2.2-rc.1"
+  },
+  "packageManager": "pnpm@12.17.0",
+  "config": {
+    "dshTestVersion": "0.2.2-rc.1"
+  },
+  "keywords": ["dsh", "cordis", "configuration", "shared-config"],
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    }
+  },
+  "scripts": {
+    "build": "node build.mjs",
+    "typecheck": "tsc --project tsconfig.host.json --noEmit",
+    "test": "node --import tsx/esm --test tests/*.test.ts tests/*.test.mjs",
+    "test:package": "pnpm pack --out dist/dsh-shared-config.tgz && node scripts/verify-package.mjs dist/dsh-shared-config.tgz",
+    "test:source": "node scripts/verify-native.mjs --source",
+    "test:native": "node scripts/verify-native.mjs",
+    "candidate:create": "node scripts/candidate.mjs --create",
+    "candidate:verify": "node scripts/candidate.mjs --verify",
+    "check": "pnpm run typecheck && pnpm test && pnpm run test:package",
+    "prepare": "node build.mjs",
+    "prepack": "node build.mjs"
+  },
+  "files": ["lib/", "locale/", "icon.svg", "cordis.patch.yml", "README.md", "README.zh.md", "LICENSE"],
+  "peerDependencies": {
+    "@deepseek-ai/cordis": "4.1.0",
+    "@deepseek-ai/schemastery": "3.19.0",
+    "@deepseek-ai/cordis-plugin-include": "1.1.0",
+    "@deepseek-ai/cordis-plugin-loader": "1.1.0",
+    "@deepseek-ai/dsh-config-editor": ">=0.2.2-rc.1",
+    "@deepseek-ai/dsh-app-boot": ">=0.2.2-rc.1",
+    "@deepseek-ai/dsh-atomic-write": ">=0.2.2-rc.1",
+    "@deepseek-ai/dsh-hmr": ">=0.2.2-rc.1",
+    "@deepseek-ai/dsh-system-prompt": ">=0.2.2-rc.1"
+  },
+  "dependencies": {
+    "js-yaml": "^4.3.2",
+    "yaml": "^2.9.1"
+  },
+  "devDependencies": {
+    "@deepseek-ai/cordis": "4.1.0",
+    "@deepseek-ai/schemastery": "3.19.0",
+    "@deepseek-ai/cordis-plugin-include": "1.1.0",
+    "@deepseek-ai/cordis-plugin-loader": "1.1.0",
+    "@deepseek-ai/dsh-config-editor": "0.2.2-rc.1",
+    "@deepseek-ai/dsh-app-boot": "0.2.2-rc.1",
+    "@deepseek-ai/dsh-atomic-write": "0.2.2-rc.1",
+    "@deepseek-ai/dsh-hmr": "0.2.2-rc.1",
+    "@deepseek-ai/dsh-system-prompt": "0.2.2-rc.1",
+    "@deepseek-ai/dsh-scope": "0.2.2-rc.1",
+    "@types/js-yaml": "^4.0.9",
+    "@types/node": "^24.0.0",
+    "esbuild": "0.28.2",
+    "semver": "7.8.6",
+    "tsx": "4.23.13",
+    "typescript": "6.0.3"
+  }
+}

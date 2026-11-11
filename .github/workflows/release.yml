@@ -1,0 +1,144 @@
+name: Release
+run-name: "Release: ${{ github.ref_name }} (${{ github.event_name }})"
+
+on:
+  push:
+    tags: ['*']
+  workflow_dispatch:
+    inputs:
+      candidate_run_id:
+        description: Original candidate run id for explicit recovery
+        type: string
+        required: true
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: release-dsh-shared-config
+  cancel-in-progress: false
+  queue: max
+
+jobs:
+  check:
+    name: Validate original candidate on six native platforms
+    uses: ./.github/workflows/ci.yml
+    with:
+      candidate_run_id: ${{ inputs.candidate_run_id || '' }}
+  release:
+    name: Publish and verify the same archive
+    needs: check
+    runs-on: ubuntu-26.04
+    timeout-minutes: 25
+    permissions:
+      contents: write
+      actions: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - uses: pnpm/action-setup@v6
+        with:
+          run_install: false
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '24.21.0'
+          registry-url: 'https://registry.npmjs.org'
+          package-manager-cache: false
+      - name: Require an npm CLI with trusted publishing support
+        run: node -e "const [major, minor, patch] = require('node:child_process').execSync('npm --version', { encoding:'utf8' }).trim().split('.').map(Number); if (major < 11 || (major === 11 && (minor < 5 || (minor === 5 && patch < 1)))) throw new Error('npm >= 11.5.1 is required')"
+      - id: install
+        name: Install frozen publication dependencies
+        run: pnpm install --frozen-lockfile --ignore-scripts
+      - uses: actions/download-artifact@v8
+        with:
+          artifact-ids: ${{ needs.check.outputs.artifact_id }}
+          run-id: ${{ needs.check.outputs.run_id }}
+          github-token: ${{ github.token }}
+          path: dist
+          merge-multiple: true
+      - id: candidate
+        name: Verify the original candidate
+        run: pnpm run candidate:verify
+      - id: metadata
+        name: Validate npm identity and non-regressing dist-tag
+        env:
+          EVENT: ${{ github.event_name }}
+          TAG: ${{ github.ref_name }}
+        shell: bash
+        run: |
+          if [[ "$EVENT" == push ]]; then
+            node scripts/release-metadata.mjs "$TAG"
+          else
+            version=$(node -p "JSON.parse(require('fs').readFileSync('package.json', 'utf8')).version")
+            node scripts/release-metadata.mjs "$version" --check-only
+          fi
+      - id: github_check
+        name: Verify all existing GitHub assets before either publication
+        if: github.event_name == 'push'
+        run: node scripts/github-release.mjs --check
+        env:
+          GH_TOKEN: ${{ github.token }}
+      - id: rehearsal
+        name: Rehearse publication without uploading
+        if: github.event_name == 'workflow_dispatch' && steps.metadata.outputs.existing == 'false'
+        run: npm publish ./dist/dsh-shared-config.tgz --dry-run --ignore-scripts --access public --tag "$DIST_TAG"
+        env:
+          DIST_TAG: ${{ steps.metadata.outputs.dist_tag }}
+      - name: Explain rehearsal limits
+        if: github.event_name == 'workflow_dispatch'
+        run: echo 'No publication occurred. Existing registry versions require a new version when bytes differ. A dry run does not verify the npm trusted-publisher account configuration.' >> "$GITHUB_STEP_SUMMARY"
+      - id: npm_publish
+        name: Publish the tested archive to npm using OIDC
+        if: github.event_name == 'push' && steps.metadata.outputs.publish == 'true'
+        run: npm publish ./dist/dsh-shared-config.tgz --ignore-scripts --access public --tag "$DIST_TAG" --provenance
+        env:
+          DIST_TAG: ${{ steps.metadata.outputs.dist_tag }}
+      - id: npm_verify
+        name: Download npm bytes and verify the selected dist-tag
+        if: github.event_name == 'push'
+        run: node scripts/release-metadata.mjs "$TAG" --verify
+        env:
+          TAG: ${{ github.ref_name }}
+      - id: github_publish
+        name: Publish only missing GitHub assets from the same candidate
+        if: github.event_name == 'push'
+        run: node scripts/github-release.mjs --publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+      - id: github_verify
+        name: Download and compare GitHub assets with the candidate
+        if: github.event_name == 'push'
+        run: node scripts/github-release.mjs --verify
+        env:
+          GH_TOKEN: ${{ github.token }}
+      - id: npm_consume
+        name: Consume the actual downloaded npm archive
+        if: github.event_name == 'push'
+        run: pnpm exec node scripts/verify-package.mjs dist/npm-published.tgz
+      - id: github_consume
+        name: Consume the actual downloaded GitHub archive
+        if: github.event_name == 'push'
+        run: pnpm exec node scripts/verify-package.mjs dist/github-published.tgz
+      - name: Summarize checks and candidate identity
+        if: always()
+        shell: bash
+        env:
+          CI_TITLE: Publication
+          CI_STEPS: ${{ toJSON(steps) }}
+          CI_CHECKS: "[[\"install\",\"Frozen publication dependencies\"],[\"candidate\",\"Original candidate identity and bytes\"],[\"metadata\",\"Version, tag, and non-regressing npm channel\"],[\"github_check\",\"Existing GitHub assets\"],[\"rehearsal\",\"Dry run when requested\"],[\"npm_publish\",\"Publish npm if missing\"],[\"npm_verify\",\"Downloaded npm bytes and dist-tag\"],[\"github_publish\",\"Publish missing GitHub assets\"],[\"github_verify\",\"Downloaded GitHub assets\"],[\"npm_consume\",\"Core behavior from the npm download\"],[\"github_consume\",\"Core behavior from the GitHub download\"]]"
+        run: |
+          node <<'NODE'
+          const fs = require('node:fs')
+          const { createHash } = require('node:crypto')
+          const manifest = fs.existsSync('package.json') ? JSON.parse(fs.readFileSync('package.json', 'utf8')) : {}
+          const archive = 'dist/dsh-shared-config.tgz'
+          const digest = fs.existsSync(archive) ? createHash('sha256').update(fs.readFileSync(archive)).digest('hex') : 'not present in this lane'
+          const steps = JSON.parse(process.env.CI_STEPS)
+          const rows = JSON.parse(process.env.CI_CHECKS).map(([id, title]) => '| ' + title + ' | ' + (steps[id]?.outcome ?? 'skipped') + ' |')
+          const lines = ['## ' + process.env.CI_TITLE, '', '| Identity | Value |', '| --- | --- |', '| Host | ' + process.platform + '/' + process.arch + ' |', '| Image | ' + (process.env.ImageOS ?? 'not reported') + ' / ' + (process.env.ImageVersion ?? 'not reported') + ' |', '| Tested DSH | ' + (manifest.config?.dshTestVersion ?? 'not available') + ' |', '| Declared DSH range | ' + (manifest.engines?.dsh ?? 'not available') + ' |', '| Source commit | ' + process.env.GITHUB_SHA + ' |', '| Archive SHA-256 | ' + digest + ' |', '', '| Check | Outcome |', '| --- | --- |', ...rows, '']
+          fs.appendFileSync(process.env.GITHUB_STEP_SUMMARY, lines.join('\n'))
+          NODE

@@ -1,0 +1,350 @@
+name: CI
+run-name: "CLI checks: ${{ github.ref_name }} (${{ github.event_name }})"
+
+on:
+  push:
+    branches: ['**']
+  pull_request:
+  workflow_dispatch:
+    inputs:
+      candidate_run_id:
+        description: Original candidate run id for explicit recovery
+        type: string
+        required: false
+  workflow_call:
+    inputs:
+      candidate_run_id:
+        type: string
+        required: false
+    outputs:
+      artifact_id:
+        value: ${{ jobs.candidate.outputs.artifact_id }}
+      run_id:
+        value: ${{ jobs.candidate.outputs.run_id }}
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  candidate:
+    name: Build one candidate
+    runs-on: ubuntu-26.04
+    timeout-minutes: 20
+    concurrency:
+      group: candidate-${{ github.sha }}
+      cancel-in-progress: false
+      queue: max
+    outputs:
+      artifact_id: ${{ steps.recover.outputs.artifact_id || steps.upload.outputs.artifact-id }}
+      run_id: ${{ steps.recover.outputs.run_id }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - uses: pnpm/action-setup@v6
+        with:
+          run_install: false
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '24.21.0'
+          cache: pnpm
+      - id: identity
+        name: Verify native architecture and record test identity
+        shell: bash
+        env:
+          EXPECTED_PLATFORM: linux
+          EXPECTED_ARCH: x64
+        run: |
+          node <<'NODE'
+          const assert = require('node:assert/strict')
+          const manifest = require('./package.json')
+          assert.equal(process.platform, process.env.EXPECTED_PLATFORM)
+          assert.equal(process.arch, process.env.EXPECTED_ARCH)
+          console.log(JSON.stringify({ platform: process.platform, arch: process.arch, node: process.version, dsh: manifest.config.dshTestVersion, imageOS: process.env.ImageOS, imageVersion: process.env.ImageVersion, commit: process.env.GITHUB_SHA }, null, 2))
+          NODE
+      - id: install
+        name: Install frozen dependencies
+        run: pnpm install --frozen-lockfile --ignore-scripts
+      - id: recover
+        name: Recover the existing candidate before considering a build
+        run: node scripts/candidate.mjs --lookup
+        env:
+          GH_TOKEN: ${{ github.token }}
+          CANDIDATE_RUN_ID: ${{ inputs.candidate_run_id || '' }}
+          REQUIRE_EXISTING: ${{ github.ref_type == 'tag' }}
+      - uses: actions/download-artifact@v8
+        if: steps.recover.outputs.restored == 'true'
+        with:
+          artifact-ids: ${{ steps.recover.outputs.artifact_id }}
+          run-id: ${{ steps.recover.outputs.run_id }}
+          github-token: ${{ github.token }}
+          path: dist
+          merge-multiple: true
+      - id: typecheck
+        name: Check TypeScript
+        run: pnpm run typecheck
+      - id: tests
+        name: Run all CLI unit and composition tests
+        run: pnpm test
+      - id: pack
+        name: Pack the only candidate archive
+        if: steps.recover.outputs.restored != 'true'
+        run: |
+          pnpm pack --out dist/dsh-shared-config.tgz
+          pnpm run candidate:create
+      - id: verify
+        name: Verify candidate metadata and bytes
+        run: pnpm run candidate:verify
+      - id: upload
+        if: steps.recover.outputs.restored != 'true'
+        uses: actions/upload-artifact@v6
+        with:
+          name: candidate-${{ github.sha }}
+          path: |
+            dist/dsh-shared-config.tgz
+            dist/candidate.json
+            dist/SHA256SUMS
+          if-no-files-found: error
+          retention-days: 90
+      - name: Summarize checks and candidate identity
+        if: always()
+        shell: bash
+        env:
+          CI_TITLE: Candidate
+          CI_STEPS: ${{ toJSON(steps) }}
+          CI_CHECKS: "[[\"identity\",\"Native host and fixed test version\"],[\"install\",\"Frozen dependency installation\"],[\"typecheck\",\"TypeScript\"],[\"tests\",\"All CLI unit and composition tests\"],[\"pack\",\"Build one archive or reuse existing candidate\"],[\"verify\",\"Candidate identity and bytes\"],[\"upload\",\"Store the original candidate\"]]"
+        run: |
+          node <<'NODE'
+          const fs = require('node:fs')
+          const { createHash } = require('node:crypto')
+          const manifest = fs.existsSync('package.json') ? JSON.parse(fs.readFileSync('package.json', 'utf8')) : {}
+          const archive = 'dist/dsh-shared-config.tgz'
+          const digest = fs.existsSync(archive) ? createHash('sha256').update(fs.readFileSync(archive)).digest('hex') : 'not present in this lane'
+          const steps = JSON.parse(process.env.CI_STEPS)
+          const rows = JSON.parse(process.env.CI_CHECKS).map(([id, title]) => '| ' + title + ' | ' + (steps[id]?.outcome ?? 'skipped') + ' |')
+          const lines = ['## ' + process.env.CI_TITLE, '', '| Identity | Value |', '| --- | --- |', '| Host | ' + process.platform + '/' + process.arch + ' |', '| Image | ' + (process.env.ImageOS ?? 'not reported') + ' / ' + (process.env.ImageVersion ?? 'not reported') + ' |', '| Tested DSH | ' + (manifest.config?.dshTestVersion ?? 'not available') + ' |', '| Declared DSH range | ' + (manifest.engines?.dsh ?? 'not available') + ' |', '| Source commit | ' + process.env.GITHUB_SHA + ' |', '| Archive SHA-256 | ' + digest + ' |', '', '| Check | Outcome |', '| --- | --- |', ...rows, '']
+          fs.appendFileSync(process.env.GITHUB_STEP_SUMMARY, lines.join('\n'))
+          NODE
+
+  consume:
+    needs: candidate
+    name: Test archive (${{ matrix.platform }}/${{ matrix.arch }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-26.04
+            platform: linux
+            arch: x64
+          - os: ubuntu-26.04-arm
+            platform: linux
+            arch: arm64
+          - os: windows-2025
+            platform: win32
+            arch: x64
+          - os: windows-11-arm
+            platform: win32
+            arch: arm64
+          - os: macos-26-intel
+            platform: darwin
+            arch: x64
+          - os: macos-26
+            platform: darwin
+            arch: arm64
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: pnpm/action-setup@v6
+        with:
+          run_install: false
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '24.21.0'
+          architecture: ${{ matrix.arch }}
+          cache: pnpm
+      - id: identity
+        name: Verify native architecture and record test identity
+        shell: bash
+        env:
+          EXPECTED_PLATFORM: ${{ matrix.platform }}
+          EXPECTED_ARCH: ${{ matrix.arch }}
+        run: |
+          node <<'NODE'
+          const assert = require('node:assert/strict')
+          const manifest = require('./package.json')
+          assert.equal(process.platform, process.env.EXPECTED_PLATFORM)
+          assert.equal(process.arch, process.env.EXPECTED_ARCH)
+          console.log(JSON.stringify({ platform: process.platform, arch: process.arch, node: process.version, dsh: manifest.config.dshTestVersion, imageOS: process.env.ImageOS, imageVersion: process.env.ImageVersion, commit: process.env.GITHUB_SHA }, null, 2))
+          NODE
+      - id: install
+        name: Install frozen dependencies
+        run: pnpm install --frozen-lockfile --ignore-scripts
+      - uses: actions/download-artifact@v8
+        with:
+          artifact-ids: ${{ needs.candidate.outputs.artifact_id }}
+          run-id: ${{ needs.candidate.outputs.run_id }}
+          github-token: ${{ github.token }}
+          path: dist
+          merge-multiple: true
+      - id: candidate
+        name: Verify the original candidate
+        run: pnpm run candidate:verify
+      - id: typecheck
+        name: Check TypeScript
+        run: pnpm run typecheck
+      - id: tests
+        name: Run all CLI unit and composition tests
+        run: pnpm test
+      - id: package
+        name: Install the archive and test core behavior through Loader
+        run: pnpm exec node scripts/verify-package.mjs dist/dsh-shared-config.tgz
+      - id: native
+        name: Install with the official DSH CLI and test core behavior
+        run: pnpm run test:native -- --archive dist/dsh-shared-config.tgz
+      - name: Summarize checks and candidate identity
+        if: always()
+        shell: bash
+        env:
+          CI_TITLE: Archive consumption (${{ matrix.platform }}/${{ matrix.arch }})
+          CI_STEPS: ${{ toJSON(steps) }}
+          CI_CHECKS: "[[\"identity\",\"Native host and fixed test version\"],[\"install\",\"Frozen dependency installation\"],[\"candidate\",\"Same candidate identity and bytes\"],[\"typecheck\",\"TypeScript\"],[\"tests\",\"All CLI unit and composition tests\"],[\"package\",\"Clean archive install and Loader behavior\"],[\"native\",\"Official DSH CLI install and core behavior\"]]"
+        run: |
+          node <<'NODE'
+          const fs = require('node:fs')
+          const { createHash } = require('node:crypto')
+          const manifest = fs.existsSync('package.json') ? JSON.parse(fs.readFileSync('package.json', 'utf8')) : {}
+          const archive = 'dist/dsh-shared-config.tgz'
+          const digest = fs.existsSync(archive) ? createHash('sha256').update(fs.readFileSync(archive)).digest('hex') : 'not present in this lane'
+          const steps = JSON.parse(process.env.CI_STEPS)
+          const rows = JSON.parse(process.env.CI_CHECKS).map(([id, title]) => '| ' + title + ' | ' + (steps[id]?.outcome ?? 'skipped') + ' |')
+          const lines = ['## ' + process.env.CI_TITLE, '', '| Identity | Value |', '| --- | --- |', '| Host | ' + process.platform + '/' + process.arch + ' |', '| Image | ' + (process.env.ImageOS ?? 'not reported') + ' / ' + (process.env.ImageVersion ?? 'not reported') + ' |', '| Tested DSH | ' + (manifest.config?.dshTestVersion ?? 'not available') + ' |', '| Declared DSH range | ' + (manifest.engines?.dsh ?? 'not available') + ' |', '| Source commit | ' + process.env.GITHUB_SHA + ' |', '| Archive SHA-256 | ' + digest + ' |', '', '| Check | Outcome |', '| --- | --- |', ...rows, '']
+          fs.appendFileSync(process.env.GITHUB_STEP_SUMMARY, lines.join('\n'))
+          NODE
+
+  source:
+    name: Test Git source (${{ matrix.platform }}/${{ matrix.arch }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-26.04
+            platform: linux
+            arch: x64
+          - os: ubuntu-26.04-arm
+            platform: linux
+            arch: arm64
+          - os: windows-2025
+            platform: win32
+            arch: x64
+          - os: windows-11-arm
+            platform: win32
+            arch: arm64
+          - os: macos-26-intel
+            platform: darwin
+            arch: x64
+          - os: macos-26
+            platform: darwin
+            arch: arm64
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: pnpm/action-setup@v6
+        with:
+          run_install: false
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '24.21.0'
+          architecture: ${{ matrix.arch }}
+          cache: pnpm
+      - id: identity
+        name: Verify native architecture and record test identity
+        shell: bash
+        env:
+          EXPECTED_PLATFORM: ${{ matrix.platform }}
+          EXPECTED_ARCH: ${{ matrix.arch }}
+        run: |
+          node <<'NODE'
+          const assert = require('node:assert/strict')
+          const manifest = require('./package.json')
+          assert.equal(process.platform, process.env.EXPECTED_PLATFORM)
+          assert.equal(process.arch, process.env.EXPECTED_ARCH)
+          console.log(JSON.stringify({ platform: process.platform, arch: process.arch, node: process.version, dsh: manifest.config.dshTestVersion, imageOS: process.env.ImageOS, imageVersion: process.env.ImageVersion, commit: process.env.GITHUB_SHA }, null, 2))
+          NODE
+      - id: install
+        name: Install frozen dependencies
+        run: pnpm install --frozen-lockfile --ignore-scripts
+      - id: fixture
+        name: Consume the proposed Git source without prebuilt lib
+        if: github.ref_type != 'tag' && (github.event_name == 'pull_request' || github.ref_name != github.event.repository.default_branch)
+        shell: bash
+        run: |
+          repository=$(node -p "require('node:url').pathToFileURL(process.cwd()).href")
+          pnpm run test:source -- --repository "$repository" --commit "$SOURCE_COMMIT"
+        env:
+          SOURCE_COMMIT: ${{ github.sha }}
+      - id: branch
+        name: Consume the actual remote default branch without prebuilt lib
+        if: github.ref_type != 'tag' && github.event_name != 'pull_request' && github.ref_name == github.event.repository.default_branch
+        run: pnpm run test:source -- --commit "$SOURCE_COMMIT"
+        shell: bash
+        env:
+          SOURCE_COMMIT: ${{ github.sha }}
+      - id: tag
+        name: Consume the actual release tag without prebuilt lib
+        if: github.ref_type == 'tag'
+        run: pnpm run test:source -- --ref "$SOURCE_TAG" --commit "$SOURCE_COMMIT"
+        shell: bash
+        env:
+          SOURCE_TAG: ${{ github.ref_name }}
+          SOURCE_COMMIT: ${{ github.sha }}
+      - name: Summarize checks and candidate identity
+        if: always()
+        shell: bash
+        env:
+          CI_TITLE: Git source consumption (${{ matrix.platform }}/${{ matrix.arch }})
+          CI_STEPS: ${{ toJSON(steps) }}
+          CI_CHECKS: "[[\"identity\",\"Native host and fixed test version\"],[\"install\",\"Frozen dependency installation\"],[\"fixture\",\"Proposed source fixture for a pull request or non-default branch\"],[\"branch\",\"Actual remote default-branch source\"],[\"tag\",\"Actual remote release-tag source\"]]"
+        run: |
+          node <<'NODE'
+          const fs = require('node:fs')
+          const { createHash } = require('node:crypto')
+          const manifest = fs.existsSync('package.json') ? JSON.parse(fs.readFileSync('package.json', 'utf8')) : {}
+          const archive = 'dist/dsh-shared-config.tgz'
+          const digest = fs.existsSync(archive) ? createHash('sha256').update(fs.readFileSync(archive)).digest('hex') : 'not present in this lane'
+          const steps = JSON.parse(process.env.CI_STEPS)
+          const rows = JSON.parse(process.env.CI_CHECKS).map(([id, title]) => '| ' + title + ' | ' + (steps[id]?.outcome ?? 'skipped') + ' |')
+          const lines = ['## ' + process.env.CI_TITLE, '', '| Identity | Value |', '| --- | --- |', '| Host | ' + process.platform + '/' + process.arch + ' |', '| Image | ' + (process.env.ImageOS ?? 'not reported') + ' / ' + (process.env.ImageVersion ?? 'not reported') + ' |', '| Tested DSH | ' + (manifest.config?.dshTestVersion ?? 'not available') + ' |', '| Declared DSH range | ' + (manifest.engines?.dsh ?? 'not available') + ' |', '| Source commit | ' + process.env.GITHUB_SHA + ' |', '| Archive SHA-256 | ' + digest + ' |', '', '| Check | Outcome |', '| --- | --- |', ...rows, '']
+          fs.appendFileSync(process.env.GITHUB_STEP_SUMMARY, lines.join('\n'))
+          NODE
+
+  quality:
+    name: All CLI checks
+    if: always()
+    needs: [candidate, consume, source]
+    runs-on: ubuntu-26.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '24.21.0'
+      - name: Summarize required gates
+        shell: bash
+        env:
+          CHECK_RESULTS: ${{ toJSON(needs) }}
+        run: |
+          node <<'NODE'
+          const fs = require('node:fs')
+          const results = JSON.parse(process.env.CHECK_RESULTS)
+          const titles = { candidate: 'One original candidate', consume: 'Archive and all CLI behavior checks on all six native platforms', source: 'Git source installation and behavior on all six native platforms' }
+          const rows = Object.entries(results).map(([id, job]) => '| ' + titles[id] + ' | ' + job.result + ' |')
+          fs.appendFileSync(process.env.GITHUB_STEP_SUMMARY, ['# CLI validation', '', '| Required gate | Result |', '| --- | --- |', ...rows, '', 'Open each matrix job for its platform, image, exact DSH target, archive hash, and individual check outcomes.', ''].join('\n'))
+          if (Object.values(results).some(job => job.result !== 'success')) process.exitCode = 1
+          NODE

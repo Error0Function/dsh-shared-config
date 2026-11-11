@@ -1,0 +1,7 @@
+- id: config-editor
+  disabled: true
+- insert:
+    - id: shared-config-editor
+      name: dsh-shared-config
+    - id: shared-config-agent-prompt
+      name: dsh-shared-config/agent-prompt
